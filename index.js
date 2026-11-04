@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const app = express();
 app.use(cors());
@@ -27,12 +28,73 @@ const mongoClient = await connectToMongoDB();
 
 const db = mongoClient.db("wanderlust")
 const destinationCollection = db.collection("destination")
+const bookingCollection = db.collection("bookings")
 
 app.get("/", (req, res) => {
     res.send("Hello from the server!");
 });
 
-app.post("/add-destination", async (req, res) => {
+const verifyToken = async(req, res, next) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+        return res.status(401).send({ message: "Unauthorized access" });
+    }
+    const token = authHeader.split(" ")[1];
+    if(!token) {
+        return res.status(401).send({ message: "Unauthorized access" });
+    }
+    const JWKS =createRemoteJWKSet(new URL(`http://localhost:3000/api/auth/jwks`));
+    try{
+        const { payload } = await jwtVerify(token, JWKS);
+        next();
+    }catch(err){
+        console.error("JWT verification error:", err);
+        return res.status(401).send({ message: "Unauthorized access" });
+    }
+}
+
+app.post("/bookings", verifyToken, async (req, res) => {
+    try {
+        const data = req.body;
+        console.log(data);
+        if (!data || Object.keys(data).length === 0) {
+            return res.status(400).send({ message: "Request body cannot be empty" });
+        }
+        const result = await bookingCollection.insertOne(data);
+        res.send(result);
+    }
+    catch (error) {
+        console.error("Error inserting booking:", error);
+        res.status(500).send({ message: "Failed to insert booking", error: error.message });
+    }
+});
+
+app.get("/bookings/:email", verifyToken, async (req, res) => {
+    try {
+        const { email } = req.params;
+        const result = await bookingCollection.find({ email }).toArray();
+        res.send(result);
+    } catch (error) {
+        console.error("Error fetching bookings:", error);
+        res.status(500).send({ message: "Failed to fetch bookings", error: error.message });
+    }
+});
+
+app.delete("/bookings/:id", verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await bookingCollection.deleteOne({ _id: id });
+        if (result.deletedCount === 0) {
+            return res.status(404).send({ message: "Booking not found" });
+        }
+        res.send({ acknowledged: true, deletedId: id });
+    } catch (error) {
+        console.error("Error deleting booking:", error);
+        res.status(500).send({ message: "Failed to delete booking", error: error.message });
+    }
+});
+
+app.post("/add-destination", verifyToken, async (req, res) => {
     try {
         console.log("API Called");
         const data = req.body;
@@ -49,13 +111,13 @@ app.post("/add-destination", async (req, res) => {
     }
 });
 
-app.get("/destinations",async(req,res)=>{
+app.get("/destinations", async (req, res) => {
     const result = await destinationCollection.find().toArray()
     res.send(result)
 })
-app.get("/destinations/:id",async(req,res)=>{
-    const {id} = req.params;
-    const result = await destinationCollection.findOne({_id: new ObjectId(id)})
+app.get("/destinations/:id",verifyToken, async (req, res) => {
+    const { id } = req.params;
+    const result = await destinationCollection.findOne({ _id: new ObjectId(id) })
     res.send(result)
 })
 
@@ -86,7 +148,7 @@ app.put("/destinations/:id", async (req, res) => {
     }
 })
 
-app.delete("/destinations/:id", async (req, res) => {
+app.delete("/destinations/:id", verifyToken, async (req, res) => {
     try {
         const { id } = req.params;
 
